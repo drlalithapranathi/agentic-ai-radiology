@@ -14,7 +14,14 @@ google-adk>=0.1.0
 # Pin: google-adk 1.32 imports a2a.server.apps which moved/was removed in a2a-sdk 1.0
 a2a-sdk>=0.3,<1.0
 starlette>=0.37
+sse-starlette>=2.1
 uvicorn[standard]>=0.27
+
+# LiteLLM — used to wrap non-Gemini models (Gemma 4, Claude, OpenAI, etc.)
+# so their function-call formats route through ADK's tool-call protocol.
+# Without this, setting CRITCOM_LLM_MODEL=gemma-4-31b-it produces text-only
+# tool calls that never execute the underlying Python tools.
+litellm>=1.50
 
 # DICOM
 pydicom>=2.4

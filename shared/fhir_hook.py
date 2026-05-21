@@ -16,10 +16,10 @@ import os
 logger = logging.getLogger(__name__)
 
 # The extension URI in A2A message metadata that carries FHIR context.
-# Override per Prompt Opinion workspace.
+# Override via CRITCOM_FHIR_EXTENSION_URI for caller-specific deployments.
 FHIR_EXTENSION_URI = os.getenv(
     "CRITCOM_FHIR_EXTENSION_URI",
-    "https://promptopinion.ai/schemas/a2a/v1/fhir-context",
+    "https://github.com/iupui-soic/agentic-ai-radiology/schemas/a2a/v1/fhir-context",
 )
 
 

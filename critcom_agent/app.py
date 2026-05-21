@@ -22,7 +22,7 @@ from critcom_agent.agent import root_agent  # noqa: E402
 CRITCOM_AGENT_URL = os.getenv("CRITCOM_AGENT_URL", "http://localhost:8001")
 CRITCOM_FHIR_EXTENSION_URI = os.getenv(
     "CRITCOM_FHIR_EXTENSION_URI",
-    "https://promptopinion.ai/schemas/a2a/v1/fhir-context",
+    "https://github.com/iupui-soic/agentic-ai-radiology/schemas/a2a/v1/fhir-context",
 )
 REQUIRE_API_KEY = os.getenv("CRITCOM_REQUIRE_API_KEY", "true").lower() == "true"
 

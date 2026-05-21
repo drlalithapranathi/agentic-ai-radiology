@@ -1,0 +1,122 @@
+{
+  "schema_version": "1.0",
+  "description": "Labeled CritCom test cases. Ground truth labels are radiologist-assigned ACR categories and the expected agent trajectory. To add more cases: append entries here and seed the corresponding DiagnosticReport (FHIR path) or fetch_radiologist_findings JSON (DICOM path).",
+  "cases": [
+    {
+      "case_id": "fhir-cat1-aortic-dissection",
+      "prompt": "Process DiagnosticReport dr-001",
+      "trigger_kind": "fhir",
+      "report_id": "dr-001",
+      "service_request_id": "sr-001",
+      "patient_id": "patient-001",
+      "expected_category": "Cat1",
+      "expected_provider_name_contains": "Chen",
+      "expected_deadline_minutes": 60,
+      "expected_tools": [
+        "fetch_report_fhir_tool",
+        "resolve_provider_tool",
+        "dispatch_communication_tool",
+        "track_acknowledgment_tool"
+      ]
+    },
+    {
+      "case_id": "fhir-cat1-hypertensive-ich",
+      "prompt": "Process DiagnosticReport dr-003",
+      "trigger_kind": "fhir",
+      "report_id": "dr-003",
+      "service_request_id": "sr-003",
+      "patient_id": "patient-003",
+      "expected_category": "Cat1",
+      "expected_provider_name_contains": null,
+      "expected_deadline_minutes": 60,
+      "expected_tools": [
+        "fetch_report_fhir_tool",
+        "resolve_provider_tool",
+        "dispatch_communication_tool",
+        "track_acknowledgment_tool"
+      ]
+    },
+    {
+      "case_id": "fhir-cat2-subsegmental-pe",
+      "prompt": "Process DiagnosticReport dr-002",
+      "trigger_kind": "fhir",
+      "report_id": "dr-002",
+      "service_request_id": "sr-002",
+      "patient_id": "patient-002",
+      "expected_category": "Cat2",
+      "expected_provider_name_contains": null,
+      "expected_deadline_minutes": 1440,
+      "expected_tools": [
+        "fetch_report_fhir_tool",
+        "resolve_provider_tool",
+        "dispatch_communication_tool",
+        "track_acknowledgment_tool"
+      ]
+    },
+    {
+      "case_id": "fhir-cat3-cholelithiasis",
+      "prompt": "Process DiagnosticReport dr-004",
+      "trigger_kind": "fhir",
+      "report_id": "dr-004",
+      "service_request_id": "sr-004",
+      "patient_id": "patient-004",
+      "expected_category": "Cat3",
+      "expected_provider_name_contains": null,
+      "expected_deadline_minutes": null,
+      "expected_tools": [
+        "fetch_report_fhir_tool"
+      ]
+    },
+    {
+      "case_id": "dicom-cat1-saddle-pe-00007",
+      "prompt": "Process accession_number 00007 from the DICOM worklist. Retrieve the signed findings via fetch_radiologist_findings_tool and complete the full critical-results workflow.",
+      "trigger_kind": "dicom",
+      "report_id": "00007",
+      "service_request_id": null,
+      "patient_id": null,
+      "expected_category": "Cat1",
+      "expected_provider_name_contains": "Chen",
+      "expected_deadline_minutes": 60,
+      "expected_tools": [
+        "fetch_report_dicom_tool",
+        "fetch_radiologist_findings_tool",
+        "resolve_provider_tool",
+        "dispatch_communication_tool",
+        "track_acknowledgment_tool"
+      ]
+    },
+    {
+      "case_id": "dicom-cat2-subsegmental-pe-00003",
+      "prompt": "Process accession_number 00003 from the DICOM worklist. Retrieve the signed findings via fetch_radiologist_findings_tool and complete the full critical-results workflow.",
+      "trigger_kind": "dicom",
+      "report_id": "00003",
+      "service_request_id": null,
+      "patient_id": null,
+      "expected_category": "Cat2",
+      "expected_provider_name_contains": null,
+      "expected_deadline_minutes": 1440,
+      "expected_tools": [
+        "fetch_report_dicom_tool",
+        "fetch_radiologist_findings_tool",
+        "resolve_provider_tool",
+        "dispatch_communication_tool",
+        "track_acknowledgment_tool"
+      ]
+    },
+    {
+      "case_id": "dicom-cat3-cholelithiasis-00001",
+      "prompt": "Process accession_number 00001 from the DICOM worklist. Retrieve the signed findings via fetch_radiologist_findings_tool and complete the full critical-results workflow.",
+      "trigger_kind": "dicom",
+      "report_id": "00001",
+      "service_request_id": null,
+      "patient_id": null,
+      "expected_category": "Cat3",
+      "expected_provider_name_contains": null,
+      "expected_deadline_minutes": null,
+      "expected_tools": [
+        "fetch_report_dicom_tool",
+        "fetch_radiologist_findings_tool"
+      ]
+    }
+  ]
+}

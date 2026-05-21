@@ -6,12 +6,11 @@ End-to-end test plan for the CritCom agent via Postman.
 
 ## Setup
 
-### Base URLs
+### Base URL
 
 | Environment | URL |
 |---|---|
-| Live | `https://pranathi.b691.us/critcom/` |
-| Local | `http://localhost:8002/` |
+| Local docker stack | `http://localhost:8002/` |
 
 > Trailing `/` matters. Drop it and you'll get a 404.
 
@@ -23,13 +22,13 @@ For every request:
 |---|---|
 | `Content-Type` | `application/json` |
 
-If `CRITCOM_REQUIRE_API_KEY=true` (live deployment may enforce):
+If `CRITCOM_REQUIRE_API_KEY=true` in the agent's `.env`:
 
 | Key | Value |
 |---|---|
 | `X-API-Key` | `<value of CRITCOM_API_KEY>` |
 
-For local dev (`CRITCOM_REQUIRE_API_KEY=false`) no API key is needed.
+With the default `CRITCOM_REQUIRE_API_KEY=false` no API key header is required.
 
 ### Recommended Postman setup
 
@@ -40,7 +39,7 @@ For local dev (`CRITCOM_REQUIRE_API_KEY=false`) no API key is needed.
    |---|---|---|
    | `base_url` | `http://localhost:8002` | `http://localhost:8002` |
 
-3. Every request URL: `{{base_url}}/`. Switch live ↔ local by editing the variable.
+3. Every request URL: `{{base_url}}/`.
 4. Save each request below as a separate item in the collection.
 
 ---
@@ -274,8 +273,6 @@ curl http://localhost:8081/fhir/Communication?based-on=ServiceRequest/sr-001
 # Tasks written by track_acknowledgment
 curl http://localhost:8081/fhir/Task?focus=Communication/<id-from-response>
 ```
-
-For the live deployment, swap to whatever HAPI URL is reachable.
 
 ---
 

@@ -66,6 +66,36 @@ clearly and do not proceed.
 """
 
 
+def _wrap_model(model_name: str):
+    """Choose the right ADK model wrapper.
+
+    Native Gemini models (``gemini-*``) pass through as plain strings — the
+    ADK default code path handles tool-call routing for them. Anything else
+    (``gemma-*``, ``claude-*``, OpenAI, etc.) is routed through ADK's
+    LiteLlm wrapper, which translates between provider-specific function-call
+    formats and the ADK tool-call protocol. This is what lets Gemma 4 emit a
+    structured function call that actually executes the underlying Python tool.
+    """
+    if model_name.startswith("gemini-"):
+        return model_name
+    try:
+        from google.adk.models.lite_llm import LiteLlm
+    except ImportError as e:
+        raise RuntimeError(
+            f"CRITCOM_LLM_MODEL={model_name!r} requires the litellm extras. "
+            "Install with: pip install 'google-adk[lite_llm]' litellm"
+        ) from e
+    # LiteLLM routes Google AI Studio models through the gemini/ namespace
+    # regardless of whether the underlying model is Gemini or Gemma.
+    if model_name.startswith(("gemma-", "gemma/")):
+        litellm_id = f"gemini/{model_name.removeprefix('gemma/').removeprefix('models/')}"
+    elif "/" in model_name:
+        litellm_id = model_name  # user passed an already-qualified id like "anthropic/claude-..."
+    else:
+        litellm_id = model_name
+    return LiteLlm(model=litellm_id)
+
+
 def build_agent():
     """Build the ADK Agent. Imported lazily so the module can be loaded
     without google-adk installed (useful for unit tests)."""
@@ -76,10 +106,10 @@ def build_agent():
             "google-adk is required to build the agent. Install with: pip install google-adk"
         ) from e
 
-    model = os.getenv("CRITCOM_LLM_MODEL", "gemini-2.0-flash")
+    model = _wrap_model(os.getenv("CRITCOM_LLM_MODEL", "gemini-2.0-flash"))
     extension_uri = os.getenv(
         "CRITCOM_FHIR_EXTENSION_URI",
-        "https://promptopinion.ai/schemas/a2a/v1/fhir-context",
+        "https://github.com/iupui-soic/agentic-ai-radiology/schemas/a2a/v1/fhir-context",
     )
 
     agent = Agent(

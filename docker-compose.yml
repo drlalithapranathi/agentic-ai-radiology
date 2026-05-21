@@ -38,8 +38,36 @@ services:
       - orthanc-data:/var/lib/orthanc/db
       - ./orthanc-worklists:/var/lib/orthanc/worklists
 
+  # One-shot loader: posts the FHIR transaction bundle to HAPI on every `up`.
+  # HAPI's `ifNoneExist` semantics make this idempotent — re-runs are safe.
+  # Exits cleanly when done so `docker compose up` doesn't block.
+  seed-fhir:
+    image: curlimages/curl:latest
+    container_name: critcom-seed-fhir
+    depends_on:
+      hapi-fhir:
+        condition: service_started
+    volumes:
+      - ./tests/fixtures/fhir/seed_bundle.json:/seed/seed_bundle.json:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "[seed-fhir] waiting for HAPI to be reachable..."
+        until curl -sfm 3 http://hapi-fhir:8080/fhir/metadata >/dev/null 2>&1; do
+          sleep 3
+        done
+        echo "[seed-fhir] HAPI is up. Posting transaction bundle..."
+        curl -sS -X POST http://hapi-fhir:8080/fhir \
+          -H "Content-Type: application/fhir+json" \
+          --data @/seed/seed_bundle.json \
+          -o /dev/null -w "[seed-fhir] HTTP %{http_code}\n"
+
   critcom-agent:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: critcom-agent:local
     container_name: critcom-agent
     ports:
       # Host 8002 (8001 reserved by an existing service on the deploy VM).
@@ -48,6 +76,8 @@ services:
     environment:
       AGENT_MODULE: critcom_agent.app:a2a_app
       PORT: 8001
+      # Service-name DNS only — never use `localhost` here. The agent runs in
+      # its own container, so `localhost` would point at itself, not HAPI.
       CRITCOM_FHIR_BASE_URL: http://hapi-fhir:8080/fhir
       CRITCOM_DICOM_HOST: orthanc
       CRITCOM_DICOM_PORT: 4242
@@ -57,6 +87,27 @@ services:
         condition: service_started
       orthanc:
         condition: service_started
+      seed-fhir:
+        condition: service_completed_successfully
+
+  # Eval harness as a docker service — runs the 5-metric performance suite
+  # against the in-network agent. Override CRITCOM_EVAL_BASE_URL to target
+  # the live VM instead. Started via `--profile eval` so it doesn't run on
+  # every `up` (it makes LLM calls and burns quota).
+  critcom-eval:
+    build:
+      context: .
+      dockerfile: eval/Dockerfile
+    image: critcom-eval:local
+    container_name: critcom-eval
+    profiles: ["eval"]
+    depends_on:
+      critcom-agent:
+        condition: service_started
+    environment:
+      CRITCOM_EVAL_BASE_URL: http://critcom-agent:8001
+    volumes:
+      - ./eval/reports:/app/eval/reports
 
 volumes:
   hapi-data:

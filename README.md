@@ -3,21 +3,21 @@
 > **Critical Results Communication Agent** — an A2A-compatible, FHIR-native AI
 > agent that automates the radiology critical-results workflow.
 
-Built for the [Prompt Opinion](https://promptopinion.ai) Agents Assemble
-competition. CritCom routes signed `DiagnosticReport` resources (or DICOM
-worklist entries) to the right ordering physician, tracks acknowledgment as
-FHIR `Task` resources, and escalates to the on-call backup if no response is
+CritCom routes signed `DiagnosticReport` resources (or DICOM worklist
+entries) to the right ordering physician, tracks acknowledgment as FHIR
+`Task` resources, and escalates to the on-call backup if no response is
 received within the ACR-defined timeframe.
 
 ---
 
-## Try it without installing anything
+## Try it
 
-The agent is live at **`https://pranathi.b691.us/critcom`**.
+Bring the stack up locally (`docker compose up -d`) and the agent listens
+at **`http://localhost:8002`**.
 
 ```bash
 # 1. Read the public agent card (A2A discovery)
-curl https://pranathi.b691.us/critcom/.well-known/agent-card.json
+curl http://localhost:8002/.well-known/agent-card.json
 ```
 
 Then run any of the demo scenarios below. Each is a single curl that produces
@@ -27,7 +27,7 @@ a complete tool trace plus a natural-language summary in the response.
 
 ```bash
 # A. Cat1 critical finding — full pipeline (fetch → resolve → dispatch → track)
-curl -X POST https://pranathi.b691.us/critcom/ \
+curl -X POST http://localhost:8002/ \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send",
        "params":{"message":{"role":"user","messageId":"m1",
@@ -36,7 +36,7 @@ curl -X POST https://pranathi.b691.us/critcom/ \
 #   opens Task with 60-min Cat1 deadline.
 
 # B. Cat3 routine finding — agent should STOP (no critical comm needed)
-curl -X POST https://pranathi.b691.us/critcom/ \
+curl -X POST http://localhost:8002/ \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":"2","method":"message/send",
        "params":{"message":{"role":"user","messageId":"m2",
@@ -44,7 +44,7 @@ curl -X POST https://pranathi.b691.us/critcom/ \
 # → "ACR category Cat3, no critical communication needed."
 
 # C. DICOM fallback path — query the modality worklist
-curl -X POST https://pranathi.b691.us/critcom/ \
+curl -X POST http://localhost:8002/ \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":"3","method":"message/send",
        "params":{"message":{"role":"user","messageId":"m3",
@@ -52,7 +52,7 @@ curl -X POST https://pranathi.b691.us/critcom/ \
 # → returns full study metadata via DICOM C-FIND against Orthanc.
 
 # D. Escalation — ack timer expired, agent escalates to on-call
-curl -X POST https://pranathi.b691.us/critcom/ \
+curl -X POST http://localhost:8002/ \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":"4","method":"message/send",
        "params":{"message":{"role":"user","messageId":"m4",
@@ -61,7 +61,7 @@ curl -X POST https://pranathi.b691.us/critcom/ \
 #   to on-call Dr. Reyes, opens a fresh 24h Task.
 
 # E. Audit trail — full Communication + Task history for a case
-curl -X POST https://pranathi.b691.us/critcom/ \
+curl -X POST http://localhost:8002/ \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":"5","method":"message/send",
        "params":{"message":{"role":"user","messageId":"m5",
@@ -69,7 +69,7 @@ curl -X POST https://pranathi.b691.us/critcom/ \
 # → returns every Communication and Task linked to that case.
 
 # F. Pure DICOM-only end-to-end — worklist + findings bridge
-curl -X POST https://pranathi.b691.us/critcom/ \
+curl -X POST http://localhost:8002/ \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":"6","method":"message/send",
        "params":{"message":{"role":"user","messageId":"m6",
@@ -96,72 +96,92 @@ curl -X POST https://pranathi.b691.us/critcom/ \
 
 ---
 
+## Run the full stack locally with Docker
+
+```bash
+echo 'GOOGLE_API_KEY=AIza...' > .env
+docker compose up -d                           # FHIR + DICOM + seed + agent
+curl http://localhost:8002/.well-known/agent-card.json
+```
+
+The compose stack auto-seeds HAPI on every `up` (the `seed-fhir` service
+is idempotent), so you never have to hand-curl bundles. The agent reaches
+HAPI / Orthanc by **docker service name** (`hapi-fhir`, `orthanc`) — never
+`localhost`. See **[DOCKER.md](DOCKER.md)** for the full service diagram
+and why every URL is a service name, not localhost.
+
+## Performance evaluation
+
+A separate eval harness lives under `eval/`. It runs 5 metrics against
+the agent — ACR classification, trajectory F1, FHIR state validity,
+deadline compliance, and pass^k reliability — all grounded in published
+2025–2026 clinical-agent benchmarks (TRAJECT-Bench, FHIR-AgentEval,
+τ-bench, ART). Run it with:
+
+```bash
+docker compose --profile eval run --rm critcom-eval
+```
+
+Reports drop into `eval/reports/eval-<UTC>.{md,json}`. See `eval/README.md`
+for the full metric list and how to extend the labeled-case fixture.
+
 ## Architecture — what runs where
 
-The whole system lives on **one VM** (`pranathi.b691.us`). On that VM there
-are three Docker containers and one nginx process:
+The full stack is four Docker services brought up by `docker compose up`:
 
 ```
-                 Internet  (Prompt Opinion, your curl, browsers)
+                 Clients (curl, Postman, another A2A agent)
                      │
-                     │  HTTPS  (Let's Encrypt cert)
+                     │  http://localhost:8002
                      ▼
         ┌────────────────────────────────────────┐
-        │  nginx          (host process)         │  ← terminates TLS,
-        │   :80, :443                            │    routes by URL path
-        └─────────────────┬──────────────────────┘
-                          │  http://localhost:8002
-                          ▼
-        ┌────────────────────────────────────────┐
-        │  critcom-agent  (Docker container)     │  ← your AI agent
-        │  ADK + LLM, listens on :8001 inside    │    (Gemini-driven,
-        │  the container, mapped to host :8002   │     7 tools)
+        │  critcom-agent  (Docker container)     │  ← the AI agent
+        │  ADK + Gemini, listens on :8001 inside │    (8 tools,
+        │  the container, mapped to host :8002   │     A2A JSON-RPC)
         └────────┬───────────────────┬───────────┘
                  │                   │
                  │  docker network   │  docker network
                  ▼                   ▼
         ┌──────────────────┐  ┌──────────────────┐
         │  critcom-hapi    │  │  critcom-orthanc │
-        │  HAPI FHIR       │  │  DICOM server    │
-        │  (medical data)  │  │  (imaging meta)  │
+        │  HAPI FHIR R4    │  │  DICOM + worklist│
         │  :8080 internal  │  │  :8042 + :4242   │
+        │  (host :8081)    │  │  (host :8042)    │
         └──────────────────┘  └──────────────────┘
+                 ▲
+                 │  POST seed_bundle.json (one-shot, idempotent)
+                 │
+        ┌────────┴───────────┐
+        │  critcom-seed-fhir │  curl image, exits 0 after seeding HAPI
+        └────────────────────┘
 ```
 
-**Plain-English version of the same diagram:**
+**Plain-English version:**
 
-- The **agent** is the only thing the outside world ever talks to.
-- **HAPI** is the agent's private medical-records database. Nobody outside
-  the VM can reach it directly; the agent reaches it over the internal
-  Docker network.
-- **Orthanc** is the agent's private DICOM/imaging database. Same deal —
-  internal only.
-- **nginx** is the front door: it owns the public domain and the HTTPS cert,
-  and it forwards anything matching `https://pranathi.b691.us/critcom/*`
-  down to the agent container on `localhost:8002`. nginx exists because:
-  Prompt Opinion requires HTTPS, the VM hosts other apps that need to share
-  the same domain, and `https://…/critcom/` is friendlier than
-  `http://149.165.238.74:8002`.
+- The **agent** is the only thing clients talk to.
+- **HAPI** is the agent's private FHIR R4 store. The agent reaches it on the
+  internal docker network at `http://hapi-fhir:8080/fhir` — never `localhost`.
+- **Orthanc** is the private DICOM store + Modality Worklist. Internal only.
+- **seed-fhir** runs once on every `docker compose up`, POSTs the seed bundle
+  to HAPI, exits clean. Idempotent — re-runs are safe.
 
-### Public vs. internal addresses
+For TLS / a public domain, terminate at a reverse proxy of your choice (nginx,
+Caddy, Traefik) on the host — out of scope for this repo.
+
+### Container-internal vs. host addresses
 
 | Address | Used by |
 |---|---|
-| `https://pranathi.b691.us/critcom/` | Prompt Opinion, your curl, browsers — the **only** public entry |
-| `http://localhost:8002` (on the VM) | nginx, when forwarding requests to the agent |
-| `http://hapi-fhir:8080/fhir` | The agent itself, from inside the Docker network |
-| `http://orthanc:8042` | The agent itself, from inside the Docker network |
-| `http://localhost:8081/fhir` (on the VM) | You, when SSH'd into the VM and poking around HAPI manually |
+| `http://localhost:8002/` | Clients on the host (your machine, your reverse proxy) |
+| `http://critcom-agent:8001` | The eval harness from inside the docker network |
+| `http://hapi-fhir:8080/fhir` | The agent, from inside the docker network |
+| `http://orthanc:8042` | The agent, from inside the docker network |
+| `http://localhost:8081/fhir` | Manual debugging from the host |
 
 Containers refer to each other by **service name** (`hapi-fhir`, `orthanc`,
 `critcom-agent`) — that's why the agent's `.env` says
-`CRITCOM_FHIR_BASE_URL=http://hapi-fhir:8080/fhir` and not `localhost`.
-
-### Local dev is the same shape, minus nginx
-
-When you run `docker compose up` on your laptop, you get the three
-containers but no nginx and no HTTPS. You hit the agent directly at
-`http://localhost:8002`. Same code, same wiring, just no public layer.
+`CRITCOM_FHIR_BASE_URL=http://hapi-fhir:8080/fhir` and not `localhost`. See
+[DOCKER.md](DOCKER.md) for the full wrong/right cheat-sheet.
 
 ---
 
@@ -170,8 +190,8 @@ containers but no nginx and no HTTPS. You hit the agent directly at
 A worked example: you POST `"Process DiagnosticReport dr-001"` to the agent.
 
 ```
-You / Prompt Opinion
-        │  POST https://pranathi.b691.us/critcom/
+Client
+        │  POST http://localhost:8002/
         │  body: A2A JSON-RPC "message/send"
         ▼
 nginx → critcom-agent
@@ -276,7 +296,6 @@ tool reading FHIR/DICOM. The LLM is the dispatcher; the tools are the truth.
 ```bash
 git clone https://github.com/iupui-soic/agentic-ai-radiology.git
 cd agentic-ai-radiology
-git checkout dev_parvati          # active branch — see "Branches" below
 cp .env.example .env
 ```
 
@@ -450,7 +469,7 @@ All settings live in `.env`. The most important ones:
 |---|---|
 | `GOOGLE_API_KEY` | Gemini model (free tier from AI Studio) |
 | `CRITCOM_LLM_MODEL` | Use `gemini-2.5-flash-lite` (others are quota-exhausted) |
-| `CRITCOM_API_KEY` | API key Prompt Opinion sends in `X-API-Key` |
+| `CRITCOM_API_KEY` | Shared-secret API key callers send in the `X-API-Key` header |
 | `CRITCOM_REQUIRE_API_KEY` | Set `false` for local dev / open demo |
 | `CRITCOM_FHIR_BASE_URL` | HAPI FHIR base URL |
 | `CRITCOM_DICOM_HOST` / `_PORT` / `_AET` | Orthanc DICOM endpoint |
@@ -463,26 +482,18 @@ All settings live in `.env`. The most important ones:
 
 ## Deployment
 
-CritCom is deployed to a single VM (`pranathi.b691.us`) running Docker
-Compose behind nginx with Let's Encrypt TLS. The same `docker-compose.yml`
-that runs locally runs in production.
-
-**On the VM:**
+The same `docker-compose.yml` that runs locally runs on any host with Docker:
 
 ```bash
-ssh plhi@pranathi.b691.us
-cd ~/critcom
-git pull origin dev_parvati
-docker-compose build critcom-agent          # NOTE: hyphenated, v1 is installed
-docker rm -f critcom-agent                  # see "Troubleshooting" below
-docker-compose up -d critcom-agent
+ssh <user>@<your-host>
+cd <repo>
+git pull origin main
+docker compose build critcom-agent
+docker compose up -d
 ```
 
-nginx terminates TLS at `/critcom/` and proxies to `localhost:8002`. The
-location block lives in `/etc/nginx/sites-enabled/default` and forwards
-`Host`, `X-Forwarded-Proto`, and `X-Forwarded-Prefix /critcom`.
-
-PRs land in `dev_parvati` and are merged to `main` for release.
+For a public deployment, terminate TLS at a reverse proxy of your choice
+(nginx, Caddy, Traefik) and forward to `http://localhost:8002`.
 
 ---
 
@@ -544,17 +555,6 @@ for the current submission scope.
   completed is calling `track_acknowledgment(action=mark_acknowledged)`
   through the agent. A small inbound webhook (or a "respond" message from
   the recipient's own agent) would close the loop end-to-end.
-
----
-
-## Branches
-
-- `main` — submission baseline
-- `dev_parvati` — **active branch**, all current work lands here
-
-If you `git pull` and see a force-push warning, run
-`git fetch && git reset --hard origin/dev_parvati`. There was one rewrite of
-history early on to strip auto-generated commit trailers.
 
 ---
 
