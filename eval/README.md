@@ -59,9 +59,18 @@ python -m eval --base-url http://<your-host>:<port>  # remote agent
 python -m eval --k 3                                 # pass^3 reliability
 python -m eval --case fhir-cat1-aortic-dissection    # one case only
 python -m eval --no-audit                            # skip audit follow-up
+python -m eval --fhir-base-url http://localhost:8081/fhir  # verify state on HAPI directly
 ```
 
 Reports are written to `eval/reports/eval-<UTC>.json` and `eval/reports/eval-<UTC>.md`.
+
+**State validation source.** When a FHIR base URL is available — via
+`--fhir-base-url` or `$CRITCOM_EVAL_FHIR_BASE_URL` (set automatically for the
+docker `critcom-eval` service) — scorer 3 reads `Communication` and `Task`
+straight off HAPI for the case's `service_request_id`, which is authoritative.
+If no FHIR URL is reachable, it falls back to parsing the agent's audit
+narrative. The docker path sets this for you; direct-python runs against the
+local stack should pass `--fhir-base-url http://localhost:8081/fhir`.
 
 ## Scaling the fixture set
 
@@ -86,6 +95,11 @@ literature norm for reportable confusion matrices.
   tool-call list.** This is a *conservative lower bound* — silent tools
   won't be credited. To upgrade to ground-truth trace capture, add ADK
   callback hooks to log tool invocations.
+- **State scoring queries HAPI directly when a FHIR URL is configured**
+  (see "State validation source" above); it only falls back to narrative
+  parsing when no FHIR server is reachable. Narrative parsing can credit a
+  case the agent merely *claims* to have completed, so prefer the FHIR path
+  for trustworthy numbers.
 - **Gemini free-tier quotas** will rate-limit at ~15 RPM. The default
   `--delay 2.0` paces the runner; raise it if you see 429s.
 - **`overall_pass`** requires: correct classification, trajectory F1 ≥ 0.75,

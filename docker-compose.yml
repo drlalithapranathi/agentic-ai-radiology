@@ -106,6 +106,9 @@ services:
         condition: service_started
     environment:
       CRITCOM_EVAL_BASE_URL: http://critcom-agent:8001
+      # Lets scorer 3 read Communication/Task straight off HAPI (authoritative)
+      # instead of parsing the agent's narrative. Service-name DNS, not localhost.
+      CRITCOM_EVAL_FHIR_BASE_URL: http://hapi-fhir:8080/fhir
     volumes:
       - ./eval/reports:/app/eval/reports
 

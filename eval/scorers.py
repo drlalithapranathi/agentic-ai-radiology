@@ -229,8 +229,37 @@ _REAL_TASK_PATTERN = re.compile(
 )
 
 
+def score_state_from_fhir(
+    communication_present: bool,
+    task_present: bool,
+    deadline_minutes: int | None,
+    expected_category: str,
+) -> StateScore:
+    """Build a StateScore from resources read directly off HAPI.
+
+    Authoritative path used by the runner when a FHIR base URL is configured —
+    it confirms the side effects actually landed rather than trusting the
+    agent's narrative. For Cat3 we want ABSENCE, so the booleans are inverted.
+    """
+    if expected_category == "Cat3":
+        return StateScore(
+            communication_present=not communication_present,
+            task_present=not task_present,
+            task_deadline_minutes=None,
+        )
+    return StateScore(
+        communication_present=communication_present,
+        task_present=task_present,
+        task_deadline_minutes=deadline_minutes,
+    )
+
+
 def score_state(audit_reply_text: str, expected_category: str) -> StateScore:
     """Best-effort parse of a query_audit_tool reply to confirm Communication + Task creation.
+
+    Fallback path, used only when the FHIR server is not reachable from the eval
+    harness (see score_state_from_fhir for the authoritative check). It reads the
+    agent's narrative, which can assert success without it being true.
 
     For Cat3 cases we want ABSENCE of these resources, so we invert: a reply that
     does not name a real Communication / Task counts as a pass.

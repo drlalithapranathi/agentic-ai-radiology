@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import time
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from eval import client, report, scorers
+from eval import client, fhir_state, report, scorers
 
 FIXTURES_PATH = pathlib.Path(__file__).parent / "fixtures" / "labeled_cases.json"
 REPORTS_DIR = pathlib.Path(__file__).parent / "reports"
@@ -35,7 +36,13 @@ def _audit_prompt(case: dict) -> str:
     return f"Use query_audit_tool to return the full Communication and Task history for accession {rid}."
 
 
-def run_case(case: dict, base_url: str, audit: bool, delay: float) -> scorers.CaseResult:
+def run_case(
+    case: dict,
+    base_url: str,
+    audit: bool,
+    delay: float,
+    fhir_base_url: str | None = None,
+) -> scorers.CaseResult:
     expected_cat = case["expected_category"]
     expected_tools = case["expected_tools"]
 
@@ -60,15 +67,33 @@ def run_case(case: dict, base_url: str, audit: bool, delay: float) -> scorers.Ca
 
     cls_correct = predicted_cat == expected_cat
     traj = scorers.score_trajectory(expected_tools, actual_tools)
-    ddl = scorers.score_deadline(expected_cat, dispatched_min)
 
-    state_text = ""
-    if audit and expected_cat != "Cat3":
+    # State validity: prefer a direct read off HAPI (authoritative), fall back
+    # to parsing the agent's audit narrative when FHIR isn't reachable.
+    sr_id = case.get("service_request_id")
+    state = None
+    if fhir_base_url and sr_id:
         if delay:
             time.sleep(delay)
-        audit_reply = client.send(base_url, _audit_prompt(case))
-        state_text = audit_reply.text if audit_reply.success else ""
-    state = scorers.score_state(state_text or main.text, expected_cat)
+        fs = fhir_state.check_state(fhir_base_url, sr_id)
+        if fs.reachable:
+            state = scorers.score_state_from_fhir(
+                fs.communication_present, fs.task_present, fs.task_deadline_minutes, expected_cat
+            )
+            # A Task's persisted ack window is more reliable than parsed prose.
+            if fs.task_deadline_minutes is not None:
+                dispatched_min = fs.task_deadline_minutes
+
+    if state is None:
+        state_text = ""
+        if audit and expected_cat != "Cat3":
+            if delay:
+                time.sleep(delay)
+            audit_reply = client.send(base_url, _audit_prompt(case))
+            state_text = audit_reply.text if audit_reply.success else ""
+        state = scorers.score_state(state_text or main.text, expected_cat)
+
+    ddl = scorers.score_deadline(expected_cat, dispatched_min)
 
     overall = (
         cls_correct
@@ -98,6 +123,7 @@ def run_all(
     delay: float = 2.0,
     limit: int | None = None,
     case_ids: list[str] | None = None,
+    fhir_base_url: str | None = None,
 ) -> scorers.EvalSummary:
     """Run the full eval suite. Returns the aggregated EvalSummary."""
     cases = _load_cases()
@@ -111,7 +137,7 @@ def run_all(
 
     for run_idx in range(k):
         for case in cases:
-            result = run_case(case, base_url, audit=audit, delay=delay)
+            result = run_case(case, base_url, audit=audit, delay=delay, fhir_base_url=fhir_base_url)
             case_runs[case["case_id"]].append(result.overall_pass)
             last_results[case["case_id"]] = result
             print(f"  [run {run_idx + 1}/{k}] {case['case_id']}: "
@@ -163,9 +189,16 @@ def main() -> int:
     p.add_argument("--delay", type=float, default=2.0, help="Seconds to sleep between requests.")
     p.add_argument("--limit", type=int, default=None, help="Run only the first N cases.")
     p.add_argument("--case", action="append", dest="case_ids", default=None, help="Run only this case_id (repeatable).")
+    p.add_argument(
+        "--fhir-base-url",
+        default=os.getenv("CRITCOM_EVAL_FHIR_BASE_URL"),
+        help="HAPI FHIR base URL for direct state validation. Defaults to "
+        "$CRITCOM_EVAL_FHIR_BASE_URL. If unset, state is parsed from the agent narrative.",
+    )
     args = p.parse_args()
 
-    print(f"CritCom eval — target {args.base_url}, k={args.k}, audit={not args.no_audit}")
+    fhir_note = args.fhir_base_url or "narrative-parse (no FHIR URL)"
+    print(f"CritCom eval — target {args.base_url}, k={args.k}, audit={not args.no_audit}, state={fhir_note}")
     summary = run_all(
         base_url=args.base_url,
         k=args.k,
@@ -173,6 +206,7 @@ def main() -> int:
         delay=args.delay,
         limit=args.limit,
         case_ids=args.case_ids,
+        fhir_base_url=args.fhir_base_url,
     )
     json_path, md_path = _save_reports(summary, args.base_url)
     print()
