@@ -22,6 +22,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from critcom.fhir.context import get_fhir_token, get_fhir_url
 from critcom.fhir.models import (
     Bundle,
     BundleEntry,
@@ -70,9 +71,15 @@ class FHIRClient:
 
     @classmethod
     def from_env(cls) -> "FHIRClient":
+        """Build a client from the per-request FHIR context, falling back to env.
+
+        The caller-supplied URL/token (set per task via fhir.context) take
+        precedence; the env vars are the deployment default when no per-request
+        context is present.
+        """
         return cls(
-            base_url=os.getenv("CRITCOM_FHIR_BASE_URL", "http://localhost:8080/fhir"),
-            bearer_token=os.getenv("CRITCOM_FHIR_BEARER_TOKEN") or None,
+            base_url=get_fhir_url() or os.getenv("CRITCOM_FHIR_BASE_URL", "http://localhost:8080/fhir"),
+            bearer_token=get_fhir_token() or os.getenv("CRITCOM_FHIR_BEARER_TOKEN") or None,
             timeout=float(os.getenv("CRITCOM_FHIR_TIMEOUT_SECONDS", "10")),
         )
 
@@ -215,6 +222,14 @@ class FHIRClient:
         bundle = Bundle.model_validate(data)
         return [Communication.model_validate(e.resource) for e in bundle.entry if e.resource]
 
+    async def search_communications_by_patient(self, patient_id: str) -> list[Communication]:
+        data = await self._get(
+            "/Communication",
+            params={"subject": f"Patient/{patient_id}", "_sort": "-sent"},
+        )
+        bundle = Bundle.model_validate(data)
+        return [Communication.model_validate(e.resource) for e in bundle.entry if e.resource]
+
     # ------------------------------------------------------------------
     # Task (acknowledgment)
     # ------------------------------------------------------------------
@@ -263,16 +278,26 @@ class FHIRClient:
         patient_id: str | None = None,
         limit: int = 50,
     ) -> dict[str, list[Any]]:
-        """Return communications + tasks related to a case for audit display."""
+        """Return communications + tasks related to a case for audit display.
+
+        Looks up Communications by ServiceRequest when given (the precise key),
+        otherwise by Patient. Tasks are then collected via each Communication's
+        focus reference.
+        """
         result: dict[str, list[Any]] = {"communications": [], "tasks": []}
 
         if service_request_id:
             comms = await self.search_communications(service_request_id)
-            result["communications"] = [c.model_dump(mode="json") for c in comms]
-            for c in comms:
-                if c.id:
-                    tasks = await self.search_tasks_for_communication(c.id)
-                    result["tasks"].extend(t.model_dump(mode="json") for t in tasks)
+        elif patient_id:
+            comms = await self.search_communications_by_patient(patient_id)
+        else:
+            return result
+
+        result["communications"] = [c.model_dump(mode="json") for c in comms]
+        for c in comms:
+            if c.id:
+                tasks = await self.search_tasks_for_communication(c.id)
+                result["tasks"].extend(t.model_dump(mode="json") for t in tasks)
 
         return result
 

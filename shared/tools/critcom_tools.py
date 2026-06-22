@@ -14,21 +14,22 @@ implementations and the ADK runtime.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 def _apply_fhir_context(tool_context: Any) -> None:
-    """Copy fhir_url/fhir_token from session state into env vars the client reads."""
+    """Bind this request's fhir_url/fhir_token (from session state) for the client.
+
+    Uses task-local contextvars rather than os.environ so concurrent requests
+    don't clobber each other and a request without FHIR context can't inherit a
+    previous caller's token. Always sets — passing None clears any prior value.
+    """
+    from critcom.fhir.context import set_fhir_context
+
     state = getattr(tool_context, "state", {}) or {}
-    fhir_url = state.get("fhir_url")
-    fhir_token = state.get("fhir_token")
-    if fhir_url:
-        os.environ["CRITCOM_FHIR_BASE_URL"] = fhir_url
-    if fhir_token:
-        os.environ["CRITCOM_FHIR_BEARER_TOKEN"] = fhir_token
+    set_fhir_context(fhir_url=state.get("fhir_url"), fhir_token=state.get("fhir_token"))
 
 
 async def fetch_report_fhir_tool(
