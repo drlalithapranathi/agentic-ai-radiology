@@ -316,10 +316,42 @@ def fetch_recent_communications(limit: int = 12) -> list[dict]:
     return rows
 
 
+def clear_all_communications() -> int:
+    """Delete every Communication + acknowledgment Task in FHIR (test-data reset)."""
+    base = FHIR_URL.rstrip("/")
+    n = 0
+    with httpx.Client(timeout=20.0, headers={"Accept": "application/fhir+json"}) as client:
+        for rtype in ("Task", "Communication"):  # Task first (it references Communication)
+            r = client.get(f"{base}/{rtype}", params={"_count": 200})
+            if r.status_code != 200:
+                continue
+            for e in (r.json().get("entry") or []):
+                rid = e.get("resource", {}).get("id")
+                if rid:
+                    client.delete(f"{base}/{rtype}/{rid}")
+                    n += 1
+    return n
+
+
 def render_inbox():
-    st.markdown('<div class="sec">🔔 Critical Communications Inbox '
-                '<span class="muted">· live from FHIR · everything sent from the viewer or this UI lands here</span></div>',
-                unsafe_allow_html=True)
+    hcol, bcol = st.columns([6, 1])
+    hcol.markdown('<div class="sec">🔔 Critical Communications Inbox '
+                  '<span class="muted">· live from FHIR · everything sent from the viewer or this UI lands here</span></div>',
+                  unsafe_allow_html=True)
+    with bcol:
+        if st.session_state.get("confirm_clear"):
+            if st.button("⚠️ Confirm", use_container_width=True, key="inbox_clear_confirm"):
+                try:
+                    clear_all_communications()
+                except httpx.HTTPError as e:
+                    st.warning(f"Clear failed: {e}")
+                fetch_recent_communications.clear()
+                st.session_state.pop("last", None)
+                st.session_state["confirm_clear"] = False
+                st.rerun()
+        elif st.button("🗑️ Clear", use_container_width=True, key="inbox_clear"):
+            st.session_state["confirm_clear"] = True
+            st.rerun()
     try:
         rows = fetch_recent_communications()
     except httpx.HTTPError as e:
