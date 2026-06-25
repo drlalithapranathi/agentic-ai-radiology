@@ -239,7 +239,12 @@ def send_prompt(entry: dict, sr_id: str, findings: str) -> str:
         "recipient_practitioner_id from step 1, acr_category, finding_summary).\n"
         "3. track_acknowledgment_tool(action='create', communication_id from step 2, "
         "practitioner_id from step 1, patient_id, timeout_minutes=60 for Cat1 or 1440 for Cat2).\n"
-        "If Cat3, stop and report that no critical communication is needed. Confirm each step."
+        "If Cat3 (routine), still LOG it for tracking — do not stay silent:\n"
+        "1. resolve_provider_tool(service_request_id).\n"
+        "2. dispatch_communication_tool(service_request_id, patient_id, recipient_practitioner_id "
+        "from step 1, acr_category='Cat3', finding_summary='Routine — reviewed, no critical "
+        "communication required').\n"
+        "Do NOT create an acknowledgment task for Cat3. Confirm each step."
     )
 
 
@@ -364,16 +369,21 @@ def render_inbox():
     for r in rows:
         cat = r["acr"] or "?"
         bcls = cat.lower() if str(cat).lower().startswith("cat") else "audit"
+        is_routine = str(cat).lower() == "cat3"
         ack = r.get("task_status")
-        if ack == "completed":
+        if is_routine:
+            ackbadge = '<span class="badge b-routine">NO ALERT NEEDED</span>'
+        elif ack == "completed":
             ackbadge = '<span class="badge b-routine">ACKNOWLEDGED</span>'
         elif ack:
             ackbadge = '<span class="badge b-stat">AWAITING ACK</span>'
         else:
             ackbadge = ""
+        who = (f'{html.escape(r["subject"])} · routine — reviewed, no alert sent' if is_routine
+               else f'{html.escape(r["subject"])} → notified {html.escape(r["recipient"])}')
         cards += (f'<div class="fcard"><div class="t">📣 Communication {r["id"]} '
                   f'<span class="badge b-{bcls}">{html.escape(str(cat))}</span> {ackbadge}</div>'
-                  f'<div class="s">{html.escape(r["subject"])} → notified {html.escape(r["recipient"])}</div>'
+                  f'<div class="s">{who}</div>'
                   f'<div class="s">sent {html.escape(r["sent"][:19].replace("T"," "))}'
                   + (f' · ack deadline {html.escape(r["deadline"][:19].replace("T"," "))}' if r["deadline"] else "")
                   + (f' · Task {r["task_id"]}' if r["task_id"] else "") + "</div></div>")

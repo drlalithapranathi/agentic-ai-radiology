@@ -102,7 +102,16 @@ def _call_agent(prompt):
                 task = resp.get("task_id")
 
     lines = ["CLASSIFIED:  " + ACR_LABEL.get(acr, acr or "—"), ""]
-    if provider or comm or task:
+    if acr == "Cat3":
+        lines.append("WORKFLOW STEPS")
+        n = 1
+        if provider:
+            lines.append("  %d. Resolved ordering physician      ->  %s" % (n, provider)); n += 1
+        if comm:
+            lines.append("  %d. Logged routine review (no alert) ->  Communication %s" % (n, comm)); n += 1
+        lines += ["", "Recorded in the patient chart (FHIR) for tracking.",
+                  "No notification sent and no acknowledgment timer — finding is routine."]
+    elif provider or comm or task:
         lines.append("WORKFLOW STEPS")
         n = 1
         if provider:
@@ -147,7 +156,10 @@ def on_send(output, uri, **request):
             "1. resolve_provider_tool(service_request_id).\n"
             "2. dispatch_communication_tool(service_request_id, patient_id, recipient_practitioner_id from step 1, acr_category, finding_summary).\n"
             "3. track_acknowledgment_tool(action='create', communication_id from step 2, practitioner_id from step 1, patient_id, timeout_minutes=60 for Cat1 or 1440 for Cat2).\n"
-            "If Cat3, stop and report that no critical communication is needed. Confirm each step."
+            "If Cat3 (routine), still LOG it for tracking — do not stay silent:\n"
+            "1. resolve_provider_tool(service_request_id).\n"
+            "2. dispatch_communication_tool(service_request_id, patient_id, recipient_practitioner_id from step 1, acr_category='Cat3', finding_summary='Routine - reviewed, no critical communication required').\n"
+            "Do NOT create an acknowledgment task for Cat3. Confirm each step."
         ) % (patient_id, sr_id, study_desc, accession, findings)
         output.AnswerBuffer(_call_agent(prompt), "text/plain")
     except Exception as e:  # noqa: BLE001
