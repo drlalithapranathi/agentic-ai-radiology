@@ -7,8 +7,10 @@ build/
 dist/
 .venv/
 venv/
+.venv-ui/
 .env
 .env.local
+*.env
 .pytest_cache/
 .mypy_cache/
 .coverage
@@ -19,3 +21,9 @@ htmlcov/
 .vscode/
 orthanc-worklists/
 .dcmtk-cache/
+
+# Claude Code local tooling + screenshots (never commit — may hold secrets/PII)
+.claude/
+vertex-adc.json
+*-adc.json
+credentials*.json

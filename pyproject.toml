@@ -36,6 +36,7 @@ dev = [
 [project.scripts]
 critcom-seed = "critcom.scripts.seed:main"
 critcom-seed-dicom = "critcom.scripts.seed_dicom:main"
+critcom-seed-images = "critcom.scripts.seed_dicom_images:main"
 critcom-seed-dicom-dcm4che = "critcom.scripts.seed_dicom_dcm4che:main"
 critcom-seed-dicom-dcmtk = "critcom.scripts.seed_dicom_dcmtk:main"
 
