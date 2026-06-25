@@ -1,14 +1,15 @@
-"""CritCom demo UI — a single-screen Streamlit control room.
+"""CritCom demo UI — live priority-sorted worklist with a Send/sign trigger.
 
-Pick a scenario and watch the real tool-by-tool pipeline, FHIR records read
-live from HAPI, an inline CT image from Orthanc, and close the loop with an
-acknowledge button.
+Reads the Modality Worklist straight from Orthanc (C-FIND), sorts by priority,
+and lets the radiologist type findings and Send — which fires the agent on that
+patient's real order. Nothing about the worklist is hardcoded here.
 """
 
 from __future__ import annotations
 
 import html
 import json
+import logging
 import os
 import time
 import uuid
@@ -23,47 +24,12 @@ VIEWER_PUBLIC = os.getenv("CRITCOM_UI_VIEWER_PUBLIC", "http://localhost:8042")
 ORTHANC_USER = os.getenv("CRITCOM_ORTHANC_USER", "orthanc")
 ORTHANC_PW = os.getenv("CRITCOM_ORTHANC_PASSWORD", "orthanc")
 API_KEY = os.getenv("CRITCOM_API_KEY", "")
+DICOM_HOST = os.getenv("CRITCOM_UI_DICOM_HOST", "orthanc")
+DICOM_PORT = int(os.getenv("CRITCOM_UI_DICOM_PORT", "4242"))
+DICOM_CALLED_AET = os.getenv("CRITCOM_UI_DICOM_AET", "ORTHANC")
+DICOM_CALLING_AET = os.getenv("CRITCOM_UI_DICOM_CALLING_AET", "CRITCOMUI")
 
-SCENARIOS: dict[str, dict] = {
-    "Cat1 — Aortic dissection": {
-        "acr": "Cat1", "icon": "🫀", "prompt": "Process DiagnosticReport dr-001",
-        "service_request_id": "sr-001", "study_uid": "1.2.826.0.1.3680043.8.498.50000000001",
-        "blurb": "Type A aortic dissection → notify Dr. Chen → 60-min Cat1 ack Task."},
-    "Cat1 — Brain hemorrhage (ICH)": {
-        "acr": "Cat1", "icon": "🧠", "prompt": "Process DiagnosticReport dr-003",
-        "service_request_id": "sr-003", "study_uid": "1.2.826.0.1.3680043.8.498.50000000003",
-        "blurb": "Hypertensive intracranial hemorrhage (head CT) — not aortic-specific."},
-    "Cat2 — Subsegmental PE": {
-        "acr": "Cat2", "icon": "🫁", "prompt": "Process DiagnosticReport dr-002",
-        "service_request_id": "sr-002", "study_uid": "1.2.826.0.1.3680043.8.498.50000000002",
-        "blurb": "Urgent (not immediate) PE → 24-hour deadline tier (vs Cat1's 60 min)."},
-    "Cat3 — Stable finding (STOP)": {
-        "acr": "Cat3", "icon": "🟢", "prompt": "Process DiagnosticReport dr-004",
-        "service_request_id": "sr-004", "study_uid": "1.2.826.0.1.3680043.8.498.50000000004",
-        "blurb": "Stable cholelithiasis → agent classifies Cat3 and stops. No notification."},
-    "DICOM — Saddle PE (00007)": {
-        "acr": "Cat1", "icon": "🩻",
-        "prompt": ("Process accession_number 00007 from the DICOM worklist. Retrieve the signed "
-                   "findings via fetch_radiologist_findings_tool and complete the full "
-                   "critical-results workflow."),
-        "service_request_id": "sr-001", "study_uid": "1.2.826.0.1.3680043.8.498.50000000001",
-        "blurb": "DICOM path: worklist (no findings) → report broker → classify → full pipeline."},
-    "Escalation — overdue ack": {
-        "acr": "Cat2", "icon": "🚨",
-        "prompt": ("Check the acknowledgment status of Task task-overdue-001. If it is overdue and "
-                   "not yet acknowledged, escalate it. The original case was service_request_id "
-                   "sr-002, patient_id patient-002, ACR category Cat2, finding summary: Acute "
-                   "pulmonary emboli involving segmental and subsegmental branches of the right "
-                   "lower lobe pulmonary artery. The escalation timeout should be 1440 minutes."),
-        "service_request_id": "sr-002", "study_uid": "1.2.826.0.1.3680043.8.498.50000000002",
-        "blurb": "Overdue Task → mark failed → notify on-call Dr. Reyes → fresh 24h Task."},
-    "Audit trail": {
-        "acr": "Audit", "icon": "📋",
-        "prompt": ("Use query_audit_tool to return the full Communication and Task history for "
-                   "service_request_id sr-002."),
-        "service_request_id": "sr-002", "study_uid": "1.2.826.0.1.3680043.8.498.50000000002",
-        "blurb": "Read-only: every Communication + Task linked to the case."},
-}
+PRIORITY_RANK = {"EMERGENCY": 0, "STAT": 1, "HIGH": 2, "MEDIUM": 3, "ROUTINE": 4, "LOW": 5}
 
 TOOL_META = {
     "fetch_report_fhir_tool": ("📄", "Fetch report (FHIR)"),
@@ -84,36 +50,36 @@ CSS = """
 html, body, [class*="css"], .stMarkdown, .stButton>button, .stTextArea textarea { font-family:'Inter',sans-serif; }
 #MainMenu, header, footer {visibility:hidden;}
 .stApp{background:#eef3f9;}
-.block-container {padding-top:1.1rem; max-width:1380px; font-size:16px;}
-.hero{background:linear-gradient(120deg,#1d4ed8 0%,#06b6d4 100%);color:#fff;padding:28px 34px;
-  border-radius:20px;margin-bottom:10px;box-shadow:0 14px 40px rgba(6,182,212,.3);}
-.hero h1{margin:0;font-size:38px;font-weight:800;letter-spacing:-.5px;color:#fff;}
-.hero p{margin:9px 0 0;opacity:.97;font-size:16.5px;color:#fff;}
-.badge{display:inline-block;padding:4px 13px;border-radius:999px;font-size:13px;font-weight:800;color:#fff;letter-spacing:.3px;}
-.b-cat1{background:#dc2626;} .b-cat2{background:#ea8a04;} .b-cat3{background:#16a34a;} .b-audit{background:#64748b;} .b-none{background:#64748b;}
-.stButton>button{border-radius:11px;font-weight:700;font-size:16px;border:0;background:#0284c7;color:#fff;padding:.6rem 0;transition:.15s;}
+.block-container {padding-top:1.1rem; max-width:1320px; font-size:16px;}
+.hero{background:linear-gradient(120deg,#1d4ed8 0%,#06b6d4 100%);color:#fff;padding:24px 30px;
+  border-radius:18px;margin-bottom:14px;box-shadow:0 14px 40px rgba(6,182,212,.3);}
+.hero h1{margin:0;font-size:34px;font-weight:800;letter-spacing:-.5px;color:#fff;}
+.hero p{margin:8px 0 0;opacity:.97;font-size:15.5px;color:#fff;}
+.badge{display:inline-block;padding:3px 12px;border-radius:999px;font-size:12.5px;font-weight:800;color:#fff;letter-spacing:.4px;}
+.b-emergency{background:#991b1b;} .b-stat{background:#dc2626;} .b-high{background:#ea580c;}
+.b-medium{background:#d97706;} .b-routine{background:#16a34a;} .b-low{background:#64748b;} .b-none{background:#64748b;}
+.b-cat1{background:#dc2626;} .b-cat2{background:#ea8a04;} .b-cat3{background:#16a34a;} .b-audit{background:#64748b;}
+.wlrow{display:flex;align-items:center;gap:14px;padding:6px 2px;}
+.wlrow .nm{font-size:17px;font-weight:700;color:#0f172a;}
+.wlrow .meta{font-size:13.5px;color:#5b6b85;}
+.stButton>button{border-radius:11px;font-weight:700;font-size:15.5px;border:0;background:#0284c7;color:#fff;padding:.55rem 0;transition:.15s;}
 .stButton>button:hover{background:#0369a1;transform:translateY(-1px);box-shadow:0 8px 20px rgba(3,105,161,.3);}
 [data-testid="stLinkButton"] a{background:#0f172a!important;color:#fff!important;border:0!important;
-  border-radius:11px!important;font-weight:800!important;font-size:16px!important;padding:.6rem 0!important;
-  box-shadow:0 6px 16px rgba(15,23,42,.28)!important;}
-[data-testid="stLinkButton"] a:hover{background:#1e293b!important;color:#fff!important;transform:translateY(-1px);}
-[data-testid="stVerticalBlockBorderWrapper"]{border-radius:16px!important;border:1px solid #d3deec!important;
-  background:#ffffff!important;box-shadow:0 6px 18px rgba(15,23,42,.08);}
-.stTabs [data-baseweb="tab"]{font-weight:700;font-size:17px;color:#0f172a;}
-.chips{display:flex;flex-wrap:wrap;gap:13px;margin:10px 0 6px;}
-.chip{background:#ffffff;border:1px solid #d3deec;border-radius:15px;padding:13px 20px;min-width:112px;box-shadow:0 3px 10px rgba(15,23,42,.05);}
-.chip .k{font-size:12px;color:#5b6b85;text-transform:uppercase;font-weight:700;letter-spacing:.5px;}
-.chip .v{font-size:25px;font-weight:800;color:#0f172a;}
-.step{border:1px solid #e3eaf4;border-left:4px solid #0284c7;padding:13px 17px;margin:0 0 13px 4px;background:#ffffff;border-radius:0 13px 13px 0;}
-.step .h{font-weight:700;color:#0f172a;font-size:16.5px;}
-.step .io{font-family:ui-monospace,SFMono-Regular,monospace;font-size:13px;color:#1e293b;background:#f4f7fb;
-  border:1px solid #d3deec;border-radius:8px;padding:8px 11px;margin-top:7px;white-space:pre-wrap;word-break:break-word;}
+  border-radius:11px!important;font-weight:800!important;font-size:15px!important;padding:.55rem 0!important;}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:14px!important;border:1px solid #d3deec!important;
+  background:#ffffff!important;box-shadow:0 5px 16px rgba(15,23,42,.07);}
+.step{border:1px solid #e3eaf4;border-left:4px solid #0284c7;padding:12px 16px;margin:0 0 12px 4px;background:#fff;border-radius:0 12px 12px 0;}
+.step .h{font-weight:700;color:#0f172a;font-size:16px;}
+.step .io{font-family:ui-monospace,monospace;font-size:12.5px;color:#1e293b;background:#f4f7fb;
+  border:1px solid #d3deec;border-radius:8px;padding:7px 10px;margin-top:6px;white-space:pre-wrap;word-break:break-word;}
 .step .io b{color:#0369a1;}
-.fcard{border:1px solid #d3deec;border-radius:14px;padding:14px 17px;margin-bottom:12px;background:#ffffff;box-shadow:0 3px 10px rgba(15,23,42,.05);}
-.fcard .t{font-weight:700;color:#0f172a;font-size:16px;} .fcard .s{font-size:13.5px;color:#475569;margin-top:5px;}
-.sec{font-weight:800;font-size:21px;color:#0f172a;margin:18px 0 11px;}
-.scard-title{font-size:17px;font-weight:700;color:#0f172a;}
-.scard-blurb{font-size:14px;color:#475569;margin:9px 0 11px;min-height:58px;}
+.fcard{border:1px solid #d3deec;border-radius:13px;padding:13px 16px;margin-bottom:11px;background:#fff;}
+.fcard .t{font-weight:700;color:#0f172a;font-size:15.5px;} .fcard .s{font-size:13px;color:#475569;margin-top:4px;}
+.sec{font-weight:800;font-size:20px;color:#0f172a;margin:16px 0 10px;}
+.chips{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 6px;}
+.chip{background:#fff;border:1px solid #d3deec;border-radius:14px;padding:12px 18px;min-width:108px;}
+.chip .k{font-size:11.5px;color:#5b6b85;text-transform:uppercase;font-weight:700;letter-spacing:.5px;}
+.chip .v{font-size:23px;font-weight:800;color:#0f172a;}
 .muted{color:#5b6b85;font-weight:500;}
 </style>
 """
@@ -200,6 +166,83 @@ def call_agent(prompt: str, retries: int = 3) -> dict:
     return last
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_worklist() -> list[dict]:
+    logging.getLogger("pynetdicom").setLevel(logging.WARNING)
+    from pydicom.dataset import Dataset
+    from pynetdicom import AE
+    from pynetdicom.sop_class import ModalityWorklistInformationFind
+
+    ae = AE(ae_title=DICOM_CALLING_AET)
+    ae.add_requested_context(ModalityWorklistInformationFind)
+    q = Dataset()
+    q.PatientName = ""
+    q.PatientID = ""
+    q.AccessionNumber = ""
+    q.RequestedProcedurePriority = ""
+    q.RequestedProcedureDescription = ""
+    q.StudyInstanceUID = ""
+    q.Modality = ""
+    sps = Dataset()
+    sps.Modality = ""
+    sps.ScheduledProcedureStepStartDate = ""
+    sps.ScheduledProcedureStepStartTime = ""
+    sps.ScheduledProcedureStepStatus = ""
+    q.ScheduledProcedureStepSequence = [sps]
+
+    out: list[dict] = []
+    assoc = ae.associate(DICOM_HOST, DICOM_PORT, ae_title=DICOM_CALLED_AET)
+    if not assoc.is_established:
+        return out
+    try:
+        for status, ident in assoc.send_c_find(q, ModalityWorklistInformationFind):
+            if status and status.Status in (0xFF00, 0xFF01) and ident:
+                out.append({
+                    "accession": str(getattr(ident, "AccessionNumber", "") or ""),
+                    "patient_id": str(getattr(ident, "PatientID", "") or ""),
+                    "patient_name": str(getattr(ident, "PatientName", "") or "").replace("^", " ").strip(),
+                    "priority": str(getattr(ident, "RequestedProcedurePriority", "") or "").upper(),
+                    "description": str(getattr(ident, "RequestedProcedureDescription", "") or ""),
+                    "study_uid": str(getattr(ident, "StudyInstanceUID", "") or ""),
+                })
+    finally:
+        assoc.release()
+    out.sort(key=lambda e: PRIORITY_RANK.get(e["priority"], 99))
+    return out
+
+
+def resolve_sr(patient_id: str) -> str | None:
+    base = FHIR_URL.rstrip("/")
+    try:
+        with httpx.Client(timeout=10.0, headers={"Accept": "application/fhir+json"}) as c:
+            r = c.get(f"{base}/ServiceRequest", params={"subject": f"Patient/{patient_id}", "_count": 1})
+            r.raise_for_status()
+            ent = r.json().get("entry") or []
+            if ent:
+                return ent[0].get("resource", {}).get("id")
+    except httpx.HTTPError:
+        pass
+    return None
+
+
+def send_prompt(entry: dict, sr_id: str, findings: str) -> str:
+    return (
+        "A radiologist has signed a radiology report and the critical result must be handled.\n"
+        f"patient_id: {entry['patient_id']}\n"
+        f"service_request_id: {sr_id}\n"
+        f"study: {entry['description']} (accession {entry['accession']})\n"
+        f"SIGNED FINDINGS:\n{findings}\n\n"
+        "Classify the ACR category (Cat1, Cat2, or Cat3) from these findings.\n"
+        "If Cat1 or Cat2, do all three steps, passing every argument explicitly:\n"
+        "1. resolve_provider_tool(service_request_id).\n"
+        "2. dispatch_communication_tool(service_request_id, patient_id, "
+        "recipient_practitioner_id from step 1, acr_category, finding_summary).\n"
+        "3. track_acknowledgment_tool(action='create', communication_id from step 2, "
+        "practitioner_id from step 1, patient_id, timeout_minutes=60 for Cat1 or 1440 for Cat2).\n"
+        "If Cat3, stop and report that no critical communication is needed. Confirm each step."
+    )
+
+
 def fetch_fhir_records(sr: str) -> dict:
     base = FHIR_URL.rstrip("/")
     with httpx.Client(timeout=10.0, headers={"Accept": "application/fhir+json"}) as client:
@@ -215,27 +258,31 @@ def fetch_fhir_records(sr: str) -> dict:
     return {"communications": comms, "tasks": tasks}
 
 
-def viewer_link(study_uid: str) -> str:
+def _study_id_by_accession(accession: str) -> str | None:
+    with httpx.Client(timeout=6.0, auth=(ORTHANC_USER, ORTHANC_PW)) as c:
+        r = c.post(f"{ORTHANC_INTERNAL.rstrip('/')}/tools/find",
+                   json={"Level": "Study", "Query": {"AccessionNumber": accession}})
+        r.raise_for_status()
+        ids = r.json()
+        return ids[0] if ids else None
+
+
+def viewer_link(accession: str) -> str:
     try:
-        with httpx.Client(timeout=6.0, auth=(ORTHANC_USER, ORTHANC_PW)) as client:
-            r = client.post(f"{ORTHANC_INTERNAL.rstrip('/')}/tools/lookup", content=study_uid)
-            r.raise_for_status()
-            sid = next((h["ID"] for h in r.json() if h.get("Type") == "Study"), None)
+        sid = _study_id_by_accession(accession)
         if sid:
             return f"{VIEWER_PUBLIC.rstrip('/')}/ui/app/#/study/{sid}"
-    except (httpx.HTTPError, ValueError, KeyError, StopIteration):
+    except (httpx.HTTPError, ValueError, KeyError):
         pass
     return f"{VIEWER_PUBLIC.rstrip('/')}/ui/app/"
 
 
-def ct_preview(study_uid: str):
+def ct_preview(accession: str):
     try:
+        sid = _study_id_by_accession(accession)
+        if not sid:
+            return None
         with httpx.Client(timeout=8.0, auth=(ORTHANC_USER, ORTHANC_PW)) as c:
-            lk = c.post(f"{ORTHANC_INTERNAL.rstrip('/')}/tools/lookup", content=study_uid)
-            lk.raise_for_status()
-            sid = next((h["ID"] for h in lk.json() if h.get("Type") == "Study"), None)
-            if not sid:
-                return None
             inst = c.get(f"{ORTHANC_INTERNAL.rstrip('/')}/studies/{sid}/instances")
             inst.raise_for_status()
             ids = [i["ID"] for i in inst.json()]
@@ -244,7 +291,7 @@ def ct_preview(study_uid: str):
             pv = c.get(f"{ORTHANC_INTERNAL.rstrip('/')}/instances/{ids[len(ids)//2]}/preview")
             pv.raise_for_status()
             return pv.content
-    except (httpx.HTTPError, ValueError, KeyError, StopIteration):
+    except (httpx.HTTPError, ValueError, KeyError):
         return None
 
 
@@ -256,7 +303,7 @@ def render_result(L: dict):
                 unsafe_allow_html=True)
     st.markdown('<div class="chips">'
                 f'<div class="chip"><div class="k">ACR</div><div class="v">{f["acr"] or "—"}</div></div>'
-                f'<div class="chip"><div class="k">Provider</div><div class="v" style="font-size:18px">{f["provider"] or "—"}</div></div>'
+                f'<div class="chip"><div class="k">Provider</div><div class="v" style="font-size:17px">{f["provider"] or "—"}</div></div>'
                 f'<div class="chip"><div class="k">Communication</div><div class="v">{f["comm"] or "—"}</div></div>'
                 f'<div class="chip"><div class="k">Ack Task</div><div class="v">{f["task"] or "—"}</div></div>'
                 f'<div class="chip"><div class="k">Tool steps</div><div class="v">{len(steps)}</div></div>'
@@ -275,12 +322,12 @@ def render_result(L: dict):
         st.markdown('<div class="sec">🗣️ Agent summary</div>', unsafe_allow_html=True)
         st.success(res["text"] or "(no text returned)")
     with right:
-        st.markdown('<div class="sec">🖼️ CT images (DICOM · Orthanc)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec">🖼️ CT (DICOM · Orthanc)</div>', unsafe_allow_html=True)
         img = ct_preview(L["study"])
         if img:
-            st.image(img, caption="CT slice rendered from the DICOM study in Orthanc", use_container_width=True)
+            st.image(img, caption="CT slice from this study in Orthanc", use_container_width=True)
         else:
-            st.caption("No CT preview available for this case.")
+            st.caption("No CT preview available.")
         st.link_button("🔎  Open full scrollable viewer (Orthanc)", viewer_link(L["study"]), use_container_width=True)
         if f["task"]:
             if st.button("✅  Provider acknowledges → close the loop", key="ack", use_container_width=True):
@@ -312,6 +359,11 @@ def render_result(L: dict):
             st.warning(f"Couldn't read FHIR: {e}")
 
 
+def _badge_class(priority: str) -> str:
+    p = priority.lower()
+    return f"b-{p}" if p in ("emergency", "stat", "high", "medium", "routine", "low") else "b-none"
+
+
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="CritCom — Critical Results Agent", page_icon="🩻", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
@@ -333,36 +385,62 @@ def _require_password():
 
 _require_password()
 st.markdown('<div class="hero"><h1>🩻 CritCom</h1>'
-            '<p>Critical Results Communication Agent — classifies a radiology finding (ACR), notifies the '
-            'right physician, tracks acknowledgment in FHIR, and escalates on timeout. '
-            'Gemini 2.5 Pro on Vertex · FHIR R4 · DICOM.</p></div>', unsafe_allow_html=True)
+            '<p>Radiology worklist → read → sign. Signing fires the critical-results agent: '
+            'classify (ACR), notify the ordering physician, track acknowledgment, escalate on timeout. '
+            'Gemini on Vertex · FHIR R4 · DICOM.</p></div>', unsafe_allow_html=True)
 
-hc1, hc2 = st.columns([3, 1])
-hc1.markdown('<div class="sec">Pick a scenario — full ACR spectrum, both trigger paths, both outcomes</div>',
-             unsafe_allow_html=True)
+hc1, hc2, hc3 = st.columns([3, 1, 1])
+hc1.markdown('<div class="sec">📋 Modality Worklist — live from Orthanc, sorted by priority</div>', unsafe_allow_html=True)
 hc2.link_button("🩻  Open DICOM viewer", VIEWER_PUBLIC.rstrip("/") + "/ui/app/", use_container_width=True)
-names = list(SCENARIOS.keys())
-selected = None
-for r in range(0, len(names), 3):
-    cols = st.columns(3)
-    for col, name in zip(cols, names[r:r + 3]):
-        sc = SCENARIOS[name]
-        with col:
-            with st.container(border=True):
-                st.markdown(f'<span class="badge b-{sc["acr"].lower()}">{sc["acr"]}</span>'
-                            f'&nbsp;<span class="scard-title">{sc["icon"]} {name}</span>'
-                            f'<div class="scard-blurb">{sc["blurb"]}</div>', unsafe_allow_html=True)
-                if st.button("▶  Run", key=f"run_{name}", use_container_width=True):
-                    selected = name
-if selected:
-    sc = SCENARIOS[selected]
-    try:
-        with st.spinner(f"Running «{selected}» — Gemini 2.5 Pro reasons through each step "
-                        "(~20–30 s), then the full trace appears below…"):
-            res = call_agent(sc["prompt"])
-        st.session_state["last"] = {"res": res, "name": selected, "sr": sc["service_request_id"], "study": sc["study_uid"]}
-    except httpx.HTTPError as e:
-        st.error(f"Could not reach the agent: {e}")
+if hc3.button("🔄  Refresh", use_container_width=True):
+    fetch_worklist.clear()
+
+try:
+    worklist = fetch_worklist()
+except Exception as e:  # noqa: BLE001
+    worklist = []
+    st.error(f"Could not query the worklist from Orthanc: {e}")
+
+if not worklist:
+    st.info("No worklist entries found. Seed them with `critcom-seed-dicom` (and `critcom-seed-images`).")
+
+for entry in worklist:
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="wlrow"><span class="badge {_badge_class(entry["priority"])}">{entry["priority"] or "—"}</span>'
+            f'<span class="nm">{html.escape(entry["patient_name"])}</span>'
+            f'<span class="meta">· {html.escape(entry["description"])} · acc {html.escape(entry["accession"])} '
+            f'· {html.escape(entry["patient_id"])}</span></div>',
+            unsafe_allow_html=True)
+        with st.expander("📝  Read & sign"):
+            c1, c2 = st.columns([2, 3])
+            with c1:
+                img = ct_preview(entry["accession"])
+                if img:
+                    st.image(img, use_container_width=True)
+                st.link_button("🔎 Open in viewer", viewer_link(entry["accession"]), use_container_width=True)
+            with c2:
+                findings = st.text_area(
+                    "Signed findings / impression",
+                    key=f"find_{entry['accession']}",
+                    height=150,
+                    placeholder="Type the radiologist's signed findings here, then Send…",
+                )
+                if st.button("📨  Send / sign report", key=f"send_{entry['accession']}", use_container_width=True):
+                    if not findings.strip():
+                        st.warning("Type some findings first.")
+                    else:
+                        sr_id = resolve_sr(entry["patient_id"])
+                        if not sr_id:
+                            st.error(f"No FHIR ServiceRequest found for {entry['patient_id']}.")
+                        else:
+                            with st.spinner("Agent reasoning through the critical-results workflow…"):
+                                res = call_agent(send_prompt(entry, sr_id, findings.strip()))
+                            st.session_state["last"] = {
+                                "res": res, "name": f"{entry['patient_name']} · acc {entry['accession']}",
+                                "sr": sr_id, "study": entry["accession"],
+                            }
+
 if "last" in st.session_state:
     st.divider()
     render_result(st.session_state["last"])
